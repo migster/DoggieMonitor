@@ -1,0 +1,105 @@
+/**
+ *  This application monitors presence sennsors and will send out an update
+ *	if they are not present for a user-defined amount of time.  It will 
+ *	continue to send updates at the same interval until presence is detected.
+ *
+ *  Author: Miguel Corteguera (created from a combination of SmartThings
+ *	presence and garage door monitoring apps)
+ */
+
+// Automatically generated. Make future change here.
+definition(
+    name: "DoggieMonitor",
+    namespace: "",
+    author: "Miguel Corteguera",
+    description: "Presence sensor delayed inform",
+    category: "My Apps",
+    iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
+    iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
+    oauth: true)
+
+preferences {
+	section("When a presence sensor arrives or departs this location..") {
+		input "presence", "capability.presenceSensor", title: "Which sensor?"
+	}
+	section("For too long...") {
+		input "maxGoneTime", "number", title: "Minutes?"
+	}
+	section("Text me at (optional, sends a push notification if not specified)...") {
+		input "phone", "phone", title: "Phone number?", required: false
+	}
+}
+
+
+def installed() {
+	subscribe(presence, "presence", presenceHandler)
+}
+
+def updated() {
+	unsubscribe()
+	subscribe(presence, "presence", presenceHandler)
+}
+
+def presenceHandler(evt) {
+	def isNotScheduled = state.status != "scheduled"
+	if (evt.value == "present") {
+		log.debug "${presence.label ?: presence.name} has arrived at the ${location}"
+		clearSmsHistory()
+		clearStatus()
+	} else if (evt.value == "not present") {
+		log.debug "${presence.label ?: presence.name} has left the ${location}"
+		runIn(maxGoneTime * 60, takeAction, [overwrite: false])
+		state.status = "scheduled"
+	}
+
+}
+
+def takeAction(){
+	if (state.status == "scheduled")
+	{
+		def deltaMillis = 1000 * 60 * maxGoneTime
+		def timeAgo = new Date(now() - deltaMillis)
+		def goneTooLong = presence.presenceState.dateCreated.toSystemDate() < timeAgo
+
+		def recentTexts = state.smsHistory.find { it.sentDate.toSystemDate() > timeAgo }
+
+		if (!recentTexts) {
+			sendTextMessage()
+		}
+		runIn(maxGoneTime * 60, takeAction, [overwrite: false])
+	} else {
+		log.trace "Status is no longer scheduled. Not sending text."
+	}
+}
+
+def sendTextMessage() {
+	log.debug "$presence has been gone too long, texting $phone"
+
+	updateSmsHistory()
+	def goneMinutes = maxGoneTime * (state.smsHistory?.size() ?: 1)
+	def msg = "Your ${presence.label ?: presence.name} has been gone for more than ${goneMinutes} minutes!"
+	if (phone) {
+		sendSms(phone, msg)
+	}
+	else {
+		sendPush msg
+	}
+}
+
+def updateSmsHistory() {
+	if (!state.smsHistory) state.smsHistory = []
+
+	if(state.smsHistory.size() > 9) {
+		log.debug "SmsHistory is too big, reducing size"
+		state.smsHistory = state.smsHistory[-9..-1]
+	}
+	state.smsHistory << [sentDate: new Date().toSystemFormat()]
+}
+
+def clearSmsHistory() {
+	state.smsHistory = null
+}
+
+def clearStatus() {
+	state.status = null
+}
